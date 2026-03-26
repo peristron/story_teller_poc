@@ -107,9 +107,15 @@ def build_story_prompt(
     genre: str,
     tone: str,
     age_band: str,
-    scenes: int = 3,
-    questions_per_scene: int = 1,
+    scenes: int,
+    questions_per_scene: int,
+    # === NEW ENTERPRISE-LEVEL PREFERENCES ===
+    persona: str = "Wise Mentor",
+    complexity: str = "Intermediate",
+    story_length: str = "Medium (3 scenes)",
+    director_notes: str = "",
 ) -> str:
+    """Enhanced prompt with enterprise-level controls while preserving original behaviour."""
     if len(content) > 8000:
         content = content[:8000] + "\n\n[TRUNCATED FOR DEMO]"
 
@@ -123,11 +129,16 @@ def build_story_prompt(
     Target audience: {age_band}
     Genre: {genre}
     Tone: {tone}
-    Number of scenes: exactly {scenes}
+    Narrative Persona: {persona}
+    Complexity Level: {complexity}
+    Desired length: {story_length} (exactly {scenes} scenes)
     Questions per scene: exactly {questions_per_scene}
 
     Learning objectives:
     {objectives_text}
+
+    Additional director notes from user:
+    {director_notes if director_notes.strip() else "None provided — use your best judgment."}
 
     Source lesson content (embed concepts naturally — do NOT copy long sections verbatim):
     ```content
@@ -155,7 +166,7 @@ def build_story_prompt(
     • Exactly {scenes} scenes.
     • Each scene introduces or reinforces 1–2 concepts from the source content.
     • Questions must feel like natural in-world puzzles/decisions.
-    • Language must be age-appropriate for {age_band}.
+    • Language must be age-appropriate for {age_band} and match the chosen complexity.
     • Keep the total story concise and engaging.
     • Never break character or mention that this is educational content.
     """)
@@ -253,6 +264,32 @@ def main():
         questions_per_scene = st.slider("Questions per scene", 1, 3, 1)
         temperature = st.slider("Creativity (temperature)", 0.1, 1.0, 0.7, step=0.1)
 
+        # ===================== NEW: ENTERPRISE-LEVEL PREFERENCES =====================
+        with st.expander("✨ Advanced Story Preferences", expanded=False):
+            st.caption("These options give you fine-grained control over the narrative style.")
+
+            persona = st.selectbox(
+                "Narrative Persona",
+                ["Wise Mentor", "Curious Explorer", "Detective Investigator", 
+                 "Enthusiastic Guide", "Professional Educator", "Socratic Questioner"]
+            )
+
+            complexity = st.selectbox(
+                "Complexity Level",
+                ["Beginner (simple language)", "Intermediate", "Advanced (deeper concepts)"]
+            )
+
+            story_length_label = st.selectbox(
+                "Story Length",
+                ["Short (2 scenes)", "Medium (3 scenes)", "Long (4-5 scenes)"]
+            )
+
+            director_notes = st.text_area(
+                "Additional Director Notes (optional)",
+                height=100,
+                placeholder="e.g. Make the protagonist a curious student who discovers the concept themselves. Include a moral dilemma."
+            )
+
     if st.button("Generate Story Episode", type="primary", use_container_width=True):
         if not st.session_state.lesson_content.strip():
             st.warning("⚠️ Please either paste lesson content OR upload and extract files first.")
@@ -272,18 +309,22 @@ def main():
                 tone,
                 age_band,
                 num_scenes,
-                questions_per_scene
+                questions_per_scene,
+                persona=persona,
+                complexity=complexity,
+                story_length=story_length_label,
+                director_notes=director_notes
             )
             try:
                 story = call_llm(provider, system_prompt, user_prompt, temperature)
                 st.session_state.generated_story = story
-                st.session_state.audio_bytes = None  # clear old audio when new story is made
-                st.success("✅ Story generated!")
+                st.session_state.audio_bytes = None
+                st.success("✅ Story generated with your advanced preferences!")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
 
-    # ===================== READ-ALOUD SECTION (now persistent) =====================
+    # ===================== READ-ALOUD SECTION =====================
     if st.session_state.generated_story:
         st.divider()
         st.subheader("🔊 Read the Episode Aloud")
@@ -319,9 +360,8 @@ def main():
                     else:
                         st.error("Edge TTS failed to generate audio.")
 
-                st.rerun()  # refresh to show the player
+                st.rerun()
 
-        # Persistent audio player + download (outside the button)
         if st.session_state.audio_bytes:
             st.audio(st.session_state.audio_bytes, format="audio/mp3")
             st.download_button(
@@ -331,7 +371,7 @@ def main():
                 mime="audio/mpeg",
                 use_container_width=True
             )
-            st.caption("✅ Audio is now saved in session — you can play or download without regenerating.")
+            st.caption("✅ Audio is saved in session — play or download anytime.")
 
         st.subheader("📖 Generated Episode")
         st.markdown(st.session_state.generated_story)
