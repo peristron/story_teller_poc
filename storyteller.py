@@ -18,13 +18,11 @@ def call_llm(
     user_prompt: str,
     temperature: float = 0.7
 ) -> str:
-    """Calls the chosen LLM API (all are OpenAI-compatible)."""
     secret_mapping = {
         "DeepSeek": "DEEPSEEK_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
         "Grok": "XAI_API_KEY"
     }
-
     secret_name = secret_mapping.get(provider)
     if not secret_name:
         raise ValueError(f"Unsupported provider: {provider}")
@@ -57,13 +55,11 @@ def call_llm(
 
 
 def extract_text_from_files(uploaded_files) -> str:
-    """Extract text from PDF, DOCX, and TXT files (multiple supported)."""
     parts = []
     for file in uploaded_files:
         try:
             name = file.name.lower()
             raw = file.getvalue()
-
             if name.endswith(".pdf"):
                 reader = PyPDF2.PdfReader(io.BytesIO(raw))
                 for page in reader.pages:
@@ -81,23 +77,19 @@ def extract_text_from_files(uploaded_files) -> str:
                 parts.append(f"[Unsupported file type: {file.name}]")
         except Exception as e:
             parts.append(f"[Error reading {file.name}: {e}]")
-
     return "\n\n---\n\n".join(parts)
 
 
 def _sync_edge_tts(text: str, voice: str = "en-US-GuyNeural", speed: float = 1.0) -> bytes:
-    """Generate speech with Edge TTS (free) and return bytes."""
     try:
         rate_str = f"{int((speed - 1) * 100):+d}%"
         communicate = edge_tts.Communicate(text, voice, rate=rate_str)
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
                 tmp_path = tmp.name
             loop.run_until_complete(communicate.save(tmp_path))
-
             with open(tmp_path, "rb") as f:
                 audio_bytes = f.read()
             Path(tmp_path).unlink(missing_ok=True)
@@ -202,6 +194,8 @@ def main():
         st.session_state.lesson_content = ""
     if "generated_story" not in st.session_state:
         st.session_state.generated_story = ""
+    if "audio_bytes" not in st.session_state:
+        st.session_state.audio_bytes = None
 
     # ===================== MAIN UI =====================
     st.title("Story Mode – Proof of Concept")
@@ -211,31 +205,27 @@ def main():
 
     with col1:
         st.subheader("Lesson Input")
-        
         uploaded_files = st.file_uploader(
             "📤 Upload lesson files (PDF, DOCX, TXT) — multiple supported",
             accept_multiple_files=True,
             type=["pdf", "docx", "txt"]
         )
 
-        # === EXTRACTION BUTTON ===
         if uploaded_files and st.button("📤 Extract & Append Files", type="secondary", use_container_width=True):
             with st.spinner("Extracting text from uploaded files..."):
                 extracted = extract_text_from_files(uploaded_files)
                 if extracted.strip():
                     st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
-                    st.success(f"✅ Extracted text from {len(uploaded_files)} file(s) and appended to the box below!")
+                    st.success(f"✅ Extracted text from {len(uploaded_files)} file(s) and appended!")
                     st.rerun()
                 else:
                     st.warning("No text could be extracted from the files.")
 
-        # === TEXT AREA (now without key to avoid widget state conflicts) ===
         lesson_content = st.text_area(
             "Lesson Content (paste or edit here — optional if files were uploaded)",
             value=st.session_state.lesson_content,
             height=300
         )
-        # Sync any manual edits back to session state
         if lesson_content != st.session_state.lesson_content:
             st.session_state.lesson_content = lesson_content
 
@@ -263,7 +253,6 @@ def main():
         questions_per_scene = st.slider("Questions per scene", 1, 3, 1)
         temperature = st.slider("Creativity (temperature)", 0.1, 1.0, 0.7, step=0.1)
 
-    # ===================== GENERATE BUTTON =====================
     if st.button("Generate Story Episode", type="primary", use_container_width=True):
         if not st.session_state.lesson_content.strip():
             st.warning("⚠️ Please either paste lesson content OR upload and extract files first.")
@@ -288,16 +277,16 @@ def main():
             try:
                 story = call_llm(provider, system_prompt, user_prompt, temperature)
                 st.session_state.generated_story = story
+                st.session_state.audio_bytes = None  # clear old audio when new story is made
                 st.success("✅ Story generated!")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
 
-    # ===================== READ-ALOUD SECTION =====================
+    # ===================== READ-ALOUD SECTION (now persistent) =====================
     if st.session_state.generated_story:
         st.divider()
         st.subheader("🔊 Read the Episode Aloud")
-        st.caption("Your generated story is saved — no need to regenerate it.")
 
         tts_provider = st.radio(
             "TTS Provider",
@@ -320,18 +309,29 @@ def main():
                             response = client.audio.speech.create(
                                 model="tts-1", voice="alloy", input=clean_text[:4000]
                             )
-                            audio_bytes = response.content
-                            st.audio(audio_bytes, format="audio/mp3")
-                            st.download_button("⬇️ Download MP3", audio_bytes, "story_episode.mp3", "audio/mpeg")
+                            st.session_state.audio_bytes = response.content
                         except Exception as e:
                             st.error(f"OpenAI TTS error: {e}")
                 else:
                     audio_bytes = _sync_edge_tts(clean_text[:4000])
                     if audio_bytes:
-                        st.audio(audio_bytes, format="audio/mp3")
-                        st.download_button("⬇️ Download MP3", audio_bytes, "story_episode.mp3", "audio/mpeg")
+                        st.session_state.audio_bytes = audio_bytes
                     else:
                         st.error("Edge TTS failed to generate audio.")
+
+                st.rerun()  # refresh to show the player
+
+        # Persistent audio player + download (outside the button)
+        if st.session_state.audio_bytes:
+            st.audio(st.session_state.audio_bytes, format="audio/mp3")
+            st.download_button(
+                "⬇️ Download MP3",
+                st.session_state.audio_bytes,
+                file_name="story_episode.mp3",
+                mime="audio/mpeg",
+                use_container_width=True
+            )
+            st.caption("✅ Audio is now saved in session — you can play or download without regenerating.")
 
         st.subheader("📖 Generated Episode")
         st.markdown(st.session_state.generated_story)
@@ -341,6 +341,7 @@ def main():
 
     if st.session_state.generated_story and st.button("🗑️ Clear Story & Start Over"):
         st.session_state.generated_story = ""
+        st.session_state.audio_bytes = None
         st.rerun()
 
 
