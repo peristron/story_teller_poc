@@ -211,6 +211,7 @@ def main():
 
     with col1:
         st.subheader("Lesson Input")
+        
         uploaded_files = st.file_uploader(
             "📤 Upload lesson files (PDF, DOCX, TXT) — multiple supported",
             accept_multiple_files=True,
@@ -218,14 +219,15 @@ def main():
         )
 
         if uploaded_files and st.button("📤 Extract & Append Files"):
-            with st.spinner("Extracting text..."):
+            with st.spinner("Extracting text from uploaded files..."):
                 extracted = extract_text_from_files(uploaded_files)
                 st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
-                st.success(f"✅ Appended text from {len(uploaded_files)} file(s)!")
+                st.success(f"✅ Extracted and appended text from {len(uploaded_files)} file(s)!")
                 st.rerun()
 
+        # Text area is now OPTIONAL — user can rely on uploaded files only
         lesson_content = st.text_area(
-            "Lesson Content (paste or edit here)",
+            "Lesson Content (paste or edit here — optional if files were uploaded)",
             value=st.session_state.lesson_content,
             height=300,
             key="lesson_content_area"
@@ -256,9 +258,11 @@ def main():
         questions_per_scene = st.slider("Questions per scene", 1, 3, 1)
         temperature = st.slider("Creativity (temperature)", 0.1, 1.0, 0.7, step=0.1)
 
+    # ===================== GENERATE BUTTON =====================
     if st.button("Generate Story Episode", type="primary", use_container_width=True):
-        if not lesson_content.strip():
-            st.warning("⚠️ Lesson Content cannot be empty.")
+        # Allow generation from uploaded files ONLY or pasted text ONLY or both
+        if not st.session_state.lesson_content.strip():
+            st.warning("⚠️ Please either paste lesson content OR upload and extract files first.")
             st.stop()
 
         secret_mapping = {"DeepSeek": "DEEPSEEK_API_KEY", "OpenAI": "OPENAI_API_KEY", "Grok": "XAI_API_KEY"}
@@ -269,21 +273,27 @@ def main():
         with st.spinner(f"Generating story episode with {provider}..."):
             system_prompt = "You are a careful, pedagogy-aware narrative designer for educational content."
             user_prompt = build_story_prompt(
-                lesson_content, learning_objectives, genre, tone, age_band, num_scenes, questions_per_scene
+                st.session_state.lesson_content,
+                learning_objectives,
+                genre,
+                tone,
+                age_band,
+                num_scenes,
+                questions_per_scene
             )
             try:
                 story = call_llm(provider, system_prompt, user_prompt, temperature)
                 st.session_state.generated_story = story
                 st.success("✅ Story generated!")
-                st.rerun()   # force fresh render with story now in session_state
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
 
-    # ===================== READ-ALOUD SECTION (now OUTSIDE generation block) =====================
+    # ===================== READ-ALOUD SECTION =====================
     if st.session_state.generated_story:
         st.divider()
         st.subheader("🔊 Read the Episode Aloud")
-        st.caption("Your generated story is saved in session state — no need to regenerate it.")
+        st.caption("Your generated story is saved — no need to regenerate it.")
 
         tts_provider = st.radio(
             "TTS Provider",
@@ -293,7 +303,6 @@ def main():
 
         if st.button("🎙️ Generate Full Audio", type="primary", use_container_width=True):
             story_text = st.session_state.generated_story
-            # Clean for better audio flow
             clean_text = story_text.replace("**", "").replace("Question(s):", "\n\n[Question]\n")
 
             with st.spinner("Generating audio..."):
@@ -313,7 +322,6 @@ def main():
                         except Exception as e:
                             st.error(f"OpenAI TTS error: {e}")
                 else:
-                    # Edge TTS (free)
                     audio_bytes = _sync_edge_tts(clean_text[:4000])
                     if audio_bytes:
                         st.audio(audio_bytes, format="audio/mp3")
@@ -321,14 +329,12 @@ def main():
                     else:
                         st.error("Edge TTS failed to generate audio.")
 
-        # Show the story below the audio controls so user always sees it
         st.subheader("📖 Generated Episode")
         st.markdown(st.session_state.generated_story)
 
     else:
         st.info("Generate a story episode first ↑")
 
-    # Optional clear button
     if st.session_state.generated_story and st.button("🗑️ Clear Story & Start Over"):
         st.session_state.generated_story = ""
         st.rerun()
