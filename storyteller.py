@@ -3,9 +3,13 @@ import requests
 import os
 import textwrap
 import io
+import asyncio
+import tempfile
+from pathlib import Path
 from openai import OpenAI
 import PyPDF2
 import docx
+import edge_tts
 
 
 def call_llm(
@@ -14,11 +18,7 @@ def call_llm(
     user_prompt: str,
     temperature: float = 0.7
 ) -> str:
-    """
-    Calls the chosen LLM API (all are OpenAI-compatible).
-    API keys are loaded from the EXACT secret names you defined in Streamlit Secrets.
-    """
-    # Exact secret names from your secrets.toml
+    """Calls the chosen LLM API (all are OpenAI-compatible)."""
     secret_mapping = {
         "DeepSeek": "DEEPSEEK_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
@@ -33,26 +33,13 @@ def call_llm(
     if not api_key:
         raise ValueError(f"🚫 {secret_name} not found in Streamlit Secrets.")
 
-    # Provider configuration
     config = {
-        "DeepSeek": {
-            "url": "https://api.deepseek.com/v1/chat/completions",
-            "model": "deepseek-chat"
-        },
-        "OpenAI": {
-            "url": "https://api.openai.com/v1/chat/completions",
-            "model": "gpt-4o-mini"
-        },
-        "Grok": {
-            "url": "https://api.x.ai/v1/chat/completions",
-            "model": "grok-beta"
-        }
+        "DeepSeek": {"url": "https://api.deepseek.com/v1/chat/completions", "model": "deepseek-chat"},
+        "OpenAI": {"url": "https://api.openai.com/v1/chat/completions", "model": "gpt-4o-mini"},
+        "Grok": {"url": "https://api.x.ai/v1/chat/completions", "model": "grok-beta"}
     }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     payload = {
         "model": config[provider]["model"],
@@ -83,22 +70,43 @@ def extract_text_from_files(uploaded_files) -> str:
                     text = page.extract_text()
                     if text:
                         parts.append(text.strip())
-
             elif name.endswith(".docx"):
                 doc = docx.Document(io.BytesIO(raw))
                 for p in doc.paragraphs:
                     if p.text.strip():
                         parts.append(p.text.strip())
-
             elif name.endswith(".txt"):
                 parts.append(raw.decode("utf-8", errors="replace").strip())
-
             else:
                 parts.append(f"[Unsupported file type: {file.name}]")
         except Exception as e:
             parts.append(f"[Error reading {file.name}: {e}]")
 
     return "\n\n---\n\n".join(parts)
+
+
+def _sync_edge_tts(text: str, voice: str = "en-US-GuyNeural", speed: float = 1.0) -> bytes:
+    """Generate speech with Edge TTS (free) and return bytes."""
+    try:
+        rate_str = f"{int((speed - 1) * 100):+d}%"
+        communicate = edge_tts.Communicate(text, voice, rate=rate_str)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                tmp_path = tmp.name
+            loop.run_until_complete(communicate.save(tmp_path))
+
+            with open(tmp_path, "rb") as f:
+                audio_bytes = f.read()
+            Path(tmp_path).unlink(missing_ok=True)
+            return audio_bytes
+        finally:
+            loop.close()
+    except Exception as e:
+        st.error(f"Edge TTS failed: {e}")
+        return b""
 
 
 def build_story_prompt(
@@ -110,7 +118,6 @@ def build_story_prompt(
     scenes: int = 3,
     questions_per_scene: int = 1,
 ) -> str:
-    """Builds the detailed user prompt for the LLM."""
     if len(content) > 8000:
         content = content[:8000] + "\n\n[TRUNCATED FOR DEMO]"
 
@@ -164,10 +171,7 @@ def build_story_prompt(
 
 
 def main():
-    st.set_page_config(
-        page_title="Story Mode – Proof of Concept",
-        layout="wide"
-    )
+    st.set_page_config(page_title="Story Mode – Proof of Concept", layout="wide")
 
     # ===================== PASSWORD PROTECTION =====================
     if "password_correct" not in st.session_state:
@@ -179,14 +183,9 @@ def main():
 
         stored_pw = st.secrets.get("APP_PASSWORD")
         if not stored_pw:
-            st.warning("⚠️ No **APP_PASSWORD** secret found in Streamlit Secrets!\n\n"
-                       "Your secrets.toml uses `APP_PASSWORD = \"...\"`")
+            st.warning("⚠️ No **APP_PASSWORD** secret found in Streamlit Secrets!")
 
-        password_input = st.text_input(
-            "Enter app password",
-            type="password",
-            key="pw_input"
-        )
+        password_input = st.text_input("Enter app password", type="password", key="pw_input")
 
         if st.button("🔓 Unlock App", type="primary", use_container_width=True):
             stored_password = st.secrets.get("APP_PASSWORD")
@@ -195,14 +194,16 @@ def main():
                 st.success("✅ Password correct! Loading app...")
                 st.rerun()
             else:
-                st.error("❌ Incorrect password. (Tip: check exact match, no extra spaces)")
+                st.error("❌ Incorrect password.")
         st.stop()
 
-    # ===================== SESSION STATE FOR LESSON CONTENT =====================
+    # ===================== SESSION STATE =====================
     if "lesson_content" not in st.session_state:
         st.session_state.lesson_content = ""
+    if "generated_story" not in st.session_state:
+        st.session_state.generated_story = ""
 
-    # ===================== MAIN APP UI =====================
+    # ===================== MAIN UI =====================
     st.title("Story Mode – Proof of Concept")
     st.caption("Turn any lesson into an immersive educational story episode")
 
@@ -210,77 +211,46 @@ def main():
 
     with col1:
         st.subheader("Lesson Input")
-        
-        # === FILE UPLOAD (multiple files supported) ===
         uploaded_files = st.file_uploader(
             "📤 Upload lesson files (PDF, DOCX, TXT) — multiple supported",
             accept_multiple_files=True,
-            type=["pdf", "docx", "txt"],
-            help="Text will be automatically extracted and can be appended to the lesson content below"
+            type=["pdf", "docx", "txt"]
         )
 
-        if uploaded_files:
-            if st.button("📤 Extract Text from Files & Append", use_container_width=True):
-                with st.spinner("Extracting text from files..."):
-                    extracted = extract_text_from_files(uploaded_files)
-                    st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
-                    st.success(f"✅ Extracted text from {len(uploaded_files)} file(s) and appended!")
-                    st.rerun()
+        if uploaded_files and st.button("📤 Extract & Append Files"):
+            with st.spinner("Extracting text..."):
+                extracted = extract_text_from_files(uploaded_files)
+                st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
+                st.success(f"✅ Appended text from {len(uploaded_files)} file(s)!")
+                st.rerun()
 
-        # Lesson content text area (editable)
         lesson_content = st.text_area(
             "Lesson Content (paste or edit here)",
             value=st.session_state.lesson_content,
             height=300,
-            placeholder="Paste the full lesson text or topic here...",
             key="lesson_content_area"
         )
-        # Sync back to session state
         st.session_state.lesson_content = lesson_content
 
         learning_objectives = st.text_area(
             "Learning Objectives (optional)",
             height=120,
-            placeholder="e.g. Understand how photosynthesis works...",
-            help="Leave blank and the model will infer objectives automatically"
+            placeholder="e.g. Understand how photosynthesis works..."
         )
 
     with col2:
         st.subheader("Story Settings")
-        
-        provider = st.selectbox(
-            "AI Provider",
-            ["DeepSeek", "OpenAI", "Grok"],
-            help="Must match your secrets.toml names:\n"
-                 "• DeepSeek → DEEPSEEK_API_KEY\n"
-                 "• OpenAI → OPENAI_API_KEY\n"
-                 "• Grok → XAI_API_KEY"
-        )
-        
-        # === ROUGH COST ESTIMATOR ===
-        cost_map = {
-            "DeepSeek": "~ $0.005",
-            "OpenAI": "~ $0.02",
-            "Grok": "~ $0.03"
-        }
-        st.info(f"**💰 Rough cost estimate per generation**\n"
+        provider = st.selectbox("AI Provider", ["DeepSeek", "OpenAI", "Grok"])
+
+        cost_map = {"DeepSeek": "~ $0.005", "OpenAI": "~ $0.02", "Grok": "~ $0.03"}
+        st.info(f"**💰 Rough cost per generation**\n"
                 f"• DeepSeek: {cost_map['DeepSeek']}\n"
                 f"• OpenAI: {cost_map['OpenAI']}\n"
-                f"• Grok: {cost_map['Grok']}\n"
-                f"(LLM call only — typical episode length)")
+                f"• Grok: {cost_map['Grok']}")
 
-        genre = st.selectbox(
-            "Genre",
-            ["Fantasy academy", "Space mission", "Mystery / investigation", "Slice of life", "Superhero"]
-        )
-        tone = st.selectbox(
-            "Tone",
-            ["Serious", "Light / playful", "Humorous but not silly"]
-        )
-        age_band = st.selectbox(
-            "Age band",
-            ["Upper elementary (10–12)", "Middle school (12–14)", "High school (14–18)", "Adult learners"]
-        )
+        genre = st.selectbox("Genre", ["Fantasy academy", "Space mission", "Mystery / investigation", "Slice of life", "Superhero"])
+        tone = st.selectbox("Tone", ["Serious", "Light / playful", "Humorous but not silly"])
+        age_band = st.selectbox("Age band", ["Upper elementary (10–12)", "Middle school (12–14)", "High school (14–18)", "Adult learners"])
 
         num_scenes = st.slider("Number of scenes", 2, 5, 3)
         questions_per_scene = st.slider("Questions per scene", 1, 3, 1)
@@ -291,67 +261,77 @@ def main():
             st.warning("⚠️ Lesson Content cannot be empty.")
             st.stop()
 
-        secret_mapping = {
-            "DeepSeek": "DEEPSEEK_API_KEY",
-            "OpenAI": "OPENAI_API_KEY",
-            "Grok": "XAI_API_KEY"
-        }
-        secret_name = secret_mapping[provider]
-        if not st.secrets.get(secret_name):
-            st.error(f"🚫 {secret_name} not found in Streamlit Secrets.")
+        secret_mapping = {"DeepSeek": "DEEPSEEK_API_KEY", "OpenAI": "OPENAI_API_KEY", "Grok": "XAI_API_KEY"}
+        if not st.secrets.get(secret_mapping[provider]):
+            st.error(f"🚫 {secret_mapping[provider]} not found in Streamlit Secrets.")
             st.stop()
 
         with st.spinner(f"Generating story episode with {provider}..."):
             system_prompt = "You are a careful, pedagogy-aware narrative designer for educational content."
             user_prompt = build_story_prompt(
-                lesson_content,
-                learning_objectives,
-                genre,
-                tone,
-                age_band,
-                num_scenes,
-                questions_per_scene
+                lesson_content, learning_objectives, genre, tone, age_band, num_scenes, questions_per_scene
             )
-
             try:
                 story = call_llm(provider, system_prompt, user_prompt, temperature)
-                st.subheader(f"✅ Generated Episode (using {provider})")
-                st.markdown(story)
+                st.session_state.generated_story = story
+                st.success("✅ Story generated!")
+                st.rerun()   # force fresh render with story now in session_state
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
 
-                # ===================== TEXT-TO-SPEECH (READ ALOUD) =====================
-                st.divider()
-                st.subheader("🔊 Read the Episode Aloud")
-                if st.button("🎙️ Generate Full Audio with OpenAI TTS", use_container_width=True, key="tts_button"):
+    # ===================== READ-ALOUD SECTION (now OUTSIDE generation block) =====================
+    if st.session_state.generated_story:
+        st.divider()
+        st.subheader("🔊 Read the Episode Aloud")
+        st.caption("Your generated story is saved in session state — no need to regenerate it.")
+
+        tts_provider = st.radio(
+            "TTS Provider",
+            ["OpenAI TTS (paid, higher quality)", "Edge TTS (Free)"],
+            horizontal=True
+        )
+
+        if st.button("🎙️ Generate Full Audio", type="primary", use_container_width=True):
+            story_text = st.session_state.generated_story
+            # Clean for better audio flow
+            clean_text = story_text.replace("**", "").replace("Question(s):", "\n\n[Question]\n")
+
+            with st.spinner("Generating audio..."):
+                if tts_provider.startswith("OpenAI"):
                     openai_key = st.secrets.get("OPENAI_API_KEY")
                     if not openai_key:
-                        st.error("OpenAI API key required for text-to-speech.")
+                        st.error("OpenAI API key required for OpenAI TTS.")
                     else:
-                        with st.spinner("Generating audio (may take 10–20 seconds)..."):
-                            try:
-                                tts_client = OpenAI(api_key=openai_key)
-                                # Simple cleaning for better audio flow
-                                tts_text = story.replace("**", "").replace("Question(s):", "\n\n[Question for you to think about]\n")
-                                # OpenAI TTS limit is ~4096 characters — safe for a short episode
-                                response = tts_client.audio.speech.create(
-                                    model="tts-1",
-                                    voice="alloy",
-                                    input=tts_text[:4000]
-                                )
-                                audio_bytes = response.content
+                        try:
+                            client = OpenAI(api_key=openai_key)
+                            response = client.audio.speech.create(
+                                model="tts-1", voice="alloy", input=clean_text[:4000]
+                            )
+                            audio_bytes = response.content
+                            st.audio(audio_bytes, format="audio/mp3")
+                            st.download_button("⬇️ Download MP3", audio_bytes, "story_episode.mp3", "audio/mpeg")
+                        except Exception as e:
+                            st.error(f"OpenAI TTS error: {e}")
+                else:
+                    # Edge TTS (free)
+                    audio_bytes = _sync_edge_tts(clean_text[:4000])
+                    if audio_bytes:
+                        st.audio(audio_bytes, format="audio/mp3")
+                        st.download_button("⬇️ Download MP3", audio_bytes, "story_episode.mp3", "audio/mpeg")
+                    else:
+                        st.error("Edge TTS failed to generate audio.")
 
-                                st.audio(audio_bytes, format="audio/mp3")
-                                st.download_button(
-                                    "⬇️ Download MP3",
-                                    audio_bytes,
-                                    file_name="story_episode.mp3",
-                                    mime="audio/mpeg"
-                                )
-                                st.success("✅ Audio ready!")
-                            except Exception as e:
-                                st.error(f"TTS generation failed: {e}")
+        # Show the story below the audio controls so user always sees it
+        st.subheader("📖 Generated Episode")
+        st.markdown(st.session_state.generated_story)
 
-            except Exception as e:
-                st.error(f"❌ Error calling {provider} API: {str(e)}")
+    else:
+        st.info("Generate a story episode first ↑")
+
+    # Optional clear button
+    if st.session_state.generated_story and st.button("🗑️ Clear Story & Start Over"):
+        st.session_state.generated_story = ""
+        st.rerun()
 
 
 if __name__ == "__main__":
