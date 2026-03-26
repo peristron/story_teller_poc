@@ -11,17 +11,25 @@ def call_llm(
     temperature: float = 0.7
 ) -> str:
     """
-    Calls the chosen LLM API (all are OpenAI-compatible).
-    API keys are loaded from Streamlit Secrets (set in the Community Cloud dashboard).
-    
-    Supported providers: DeepSeek, OpenAI, Grok
-    NOTE: Model names and endpoints are current as of March 2026.
+    Calls the chosen LLM API (all OpenAI-compatible).
+    API keys are loaded from the EXACT secret names you defined in Streamlit Secrets.
     """
-    api_key = st.secrets.get(f"{provider.lower()}_api_key")
-    if not api_key:
-        raise ValueError(f"🚫 {provider} API key not found in Streamlit Secrets. "
-                         f"Please add '{provider.lower()}_api_key' in the dashboard.")
+    # Exact secret names from your secrets.toml
+    secret_mapping = {
+        "DeepSeek": "DEEPSEEK_API_KEY",
+        "OpenAI": "OPENAI_API_KEY",
+        "Grok": "XAI_API_KEY"
+    }
 
+    secret_name = secret_mapping.get(provider)
+    if not secret_name:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    api_key = st.secrets.get(secret_name)
+    if not api_key:
+        raise ValueError(f"🚫 {secret_name} not found in Streamlit Secrets.")
+
+    # Provider configuration
     config = {
         "DeepSeek": {
             "url": "https://api.deepseek.com/v1/chat/completions",
@@ -36,9 +44,6 @@ def call_llm(
             "model": "grok-beta"
         }
     }
-
-    if provider not in config:
-        raise ValueError(f"Unsupported provider: {provider}")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -136,12 +141,12 @@ def main():
         st.title("🔒 Story Mode – Proof of Concept")
         st.markdown("**Protected access** — enter the password set in Streamlit Secrets to continue.")
 
-        # DEBUG / HELPFUL MESSAGE if password secret is missing
-        stored_pw = st.secrets.get("password")
+        # DEBUG: Check if APP_PASSWORD secret exists (this was the mismatch)
+        stored_pw = st.secrets.get("APP_PASSWORD")
         if not stored_pw:
-            st.warning("⚠️ No 'password' secret found in Streamlit Secrets!\n\n"
-                       "Go to your app → Settings → Secrets and add:\n"
-                       "```toml\npassword = \"your-actual-password-here\"\n```")
+            st.warning("⚠️ No **APP_PASSWORD** secret found in Streamlit Secrets!\n\n"
+                       "Your secrets.toml uses `APP_PASSWORD = \"...\"`\n"
+                       "Make sure it is exactly named **APP_PASSWORD** (not password).")
 
         password_input = st.text_input(
             "Enter app password",
@@ -150,7 +155,7 @@ def main():
         )
 
         if st.button("🔓 Unlock App", type="primary", use_container_width=True):
-            stored_password = st.secrets.get("password")
+            stored_password = st.secrets.get("APP_PASSWORD")
             if stored_password and password_input.strip() == str(stored_password).strip():
                 st.session_state.password_correct = True
                 st.success("✅ Password correct! Loading app...")
@@ -184,9 +189,12 @@ def main():
         st.subheader("Story Settings")
         
         provider = st.selectbox(
-            "AI Provider (API key must be in Secrets)",
+            "AI Provider",
             ["DeepSeek", "OpenAI", "Grok"],
-            help="DeepSeek = deepseek_api_key | OpenAI = openai_api_key | Grok = grok_api_key"
+            help="Must match your secrets.toml names:\n"
+                 "• DeepSeek → DEEPSEEK_API_KEY\n"
+                 "• OpenAI → OPENAI_API_KEY\n"
+                 "• Grok → XAI_API_KEY"
         )
         
         genre = st.selectbox(
@@ -211,9 +219,16 @@ def main():
             st.warning("⚠️ Lesson Content cannot be empty.")
             st.stop()
 
-        if not st.secrets.get(f"{provider.lower()}_api_key"):
-            st.error(f"🚫 {provider} API key not found in Streamlit Secrets.\n\n"
-                     f"Add **{provider.lower()}_api_key** in the app settings on Streamlit Cloud.")
+        # Check the exact secret name for the chosen provider
+        secret_mapping = {
+            "DeepSeek": "DEEPSEEK_API_KEY",
+            "OpenAI": "OPENAI_API_KEY",
+            "Grok": "XAI_API_KEY"
+        }
+        secret_name = secret_mapping[provider]
+        if not st.secrets.get(secret_name):
+            st.error(f"🚫 {secret_name} not found in Streamlit Secrets.\n\n"
+                     f"Check your secrets.toml — it must be exactly named **{secret_name}**.")
             st.stop()
 
         with st.spinner(f"Generating story episode with {provider}..."):
