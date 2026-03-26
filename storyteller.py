@@ -218,21 +218,26 @@ def main():
             type=["pdf", "docx", "txt"]
         )
 
-        if uploaded_files and st.button("📤 Extract & Append Files"):
+        # === EXTRACTION BUTTON ===
+        if uploaded_files and st.button("📤 Extract & Append Files", type="secondary", use_container_width=True):
             with st.spinner("Extracting text from uploaded files..."):
                 extracted = extract_text_from_files(uploaded_files)
-                st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
-                st.success(f"✅ Extracted and appended text from {len(uploaded_files)} file(s)!")
-                st.rerun()
+                if extracted.strip():
+                    st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
+                    st.success(f"✅ Extracted text from {len(uploaded_files)} file(s) and appended to the box below!")
+                    st.rerun()
+                else:
+                    st.warning("No text could be extracted from the files.")
 
-        # Text area is now OPTIONAL — user can rely on uploaded files only
+        # === TEXT AREA (now without key to avoid widget state conflicts) ===
         lesson_content = st.text_area(
             "Lesson Content (paste or edit here — optional if files were uploaded)",
             value=st.session_state.lesson_content,
-            height=300,
-            key="lesson_content_area"
+            height=300
         )
-        st.session_state.lesson_content = lesson_content
+        # Sync any manual edits back to session state
+        if lesson_content != st.session_state.lesson_content:
+            st.session_state.lesson_content = lesson_content
 
         learning_objectives = st.text_area(
             "Learning Objectives (optional)",
@@ -260,7 +265,6 @@ def main():
 
     # ===================== GENERATE BUTTON =====================
     if st.button("Generate Story Episode", type="primary", use_container_width=True):
-        # Allow generation from uploaded files ONLY or pasted text ONLY or both
         if not st.session_state.lesson_content.strip():
             st.warning("⚠️ Please either paste lesson content OR upload and extract files first.")
             st.stop()
