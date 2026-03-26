@@ -2,6 +2,10 @@ import streamlit as st
 import requests
 import os
 import textwrap
+import io
+from openai import OpenAI
+import PyPDF2
+import docx
 
 
 def call_llm(
@@ -11,7 +15,7 @@ def call_llm(
     temperature: float = 0.7
 ) -> str:
     """
-    Calls the chosen LLM API (all OpenAI-compatible).
+    Calls the chosen LLM API (all are OpenAI-compatible).
     API keys are loaded from the EXACT secret names you defined in Streamlit Secrets.
     """
     # Exact secret names from your secrets.toml
@@ -63,6 +67,38 @@ def call_llm(
     response.raise_for_status()
     data = response.json()
     return data["choices"][0]["message"]["content"]
+
+
+def extract_text_from_files(uploaded_files) -> str:
+    """Extract text from PDF, DOCX, and TXT files (multiple supported)."""
+    parts = []
+    for file in uploaded_files:
+        try:
+            name = file.name.lower()
+            raw = file.getvalue()
+
+            if name.endswith(".pdf"):
+                reader = PyPDF2.PdfReader(io.BytesIO(raw))
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        parts.append(text.strip())
+
+            elif name.endswith(".docx"):
+                doc = docx.Document(io.BytesIO(raw))
+                for p in doc.paragraphs:
+                    if p.text.strip():
+                        parts.append(p.text.strip())
+
+            elif name.endswith(".txt"):
+                parts.append(raw.decode("utf-8", errors="replace").strip())
+
+            else:
+                parts.append(f"[Unsupported file type: {file.name}]")
+        except Exception as e:
+            parts.append(f"[Error reading {file.name}: {e}]")
+
+    return "\n\n---\n\n".join(parts)
 
 
 def build_story_prompt(
@@ -141,12 +177,10 @@ def main():
         st.title("🔒 Story Mode – Proof of Concept")
         st.markdown("**Protected access** — enter the password set in Streamlit Secrets to continue.")
 
-        # DEBUG: Check if APP_PASSWORD secret exists (this was the mismatch)
         stored_pw = st.secrets.get("APP_PASSWORD")
         if not stored_pw:
             st.warning("⚠️ No **APP_PASSWORD** secret found in Streamlit Secrets!\n\n"
-                       "Your secrets.toml uses `APP_PASSWORD = \"...\"`\n"
-                       "Make sure it is exactly named **APP_PASSWORD** (not password).")
+                       "Your secrets.toml uses `APP_PASSWORD = \"...\"`")
 
         password_input = st.text_input(
             "Enter app password",
@@ -164,6 +198,10 @@ def main():
                 st.error("❌ Incorrect password. (Tip: check exact match, no extra spaces)")
         st.stop()
 
+    # ===================== SESSION STATE FOR LESSON CONTENT =====================
+    if "lesson_content" not in st.session_state:
+        st.session_state.lesson_content = ""
+
     # ===================== MAIN APP UI =====================
     st.title("Story Mode – Proof of Concept")
     st.caption("Turn any lesson into an immersive educational story episode")
@@ -172,12 +210,34 @@ def main():
 
     with col1:
         st.subheader("Lesson Input")
+        
+        # === FILE UPLOAD (multiple files supported) ===
+        uploaded_files = st.file_uploader(
+            "📤 Upload lesson files (PDF, DOCX, TXT) — multiple supported",
+            accept_multiple_files=True,
+            type=["pdf", "docx", "txt"],
+            help="Text will be automatically extracted and can be appended to the lesson content below"
+        )
+
+        if uploaded_files:
+            if st.button("📤 Extract Text from Files & Append", use_container_width=True):
+                with st.spinner("Extracting text from files..."):
+                    extracted = extract_text_from_files(uploaded_files)
+                    st.session_state.lesson_content = (st.session_state.lesson_content + "\n\n" + extracted).strip()
+                    st.success(f"✅ Extracted text from {len(uploaded_files)} file(s) and appended!")
+                    st.rerun()
+
+        # Lesson content text area (editable)
         lesson_content = st.text_area(
-            "Lesson Content",
+            "Lesson Content (paste or edit here)",
+            value=st.session_state.lesson_content,
             height=300,
             placeholder="Paste the full lesson text or topic here...",
-            help="The educational concepts that will be embedded in the story"
+            key="lesson_content_area"
         )
+        # Sync back to session state
+        st.session_state.lesson_content = lesson_content
+
         learning_objectives = st.text_area(
             "Learning Objectives (optional)",
             height=120,
@@ -197,6 +257,18 @@ def main():
                  "• Grok → XAI_API_KEY"
         )
         
+        # === ROUGH COST ESTIMATOR ===
+        cost_map = {
+            "DeepSeek": "~ $0.005",
+            "OpenAI": "~ $0.02",
+            "Grok": "~ $0.03"
+        }
+        st.info(f"**💰 Rough cost estimate per generation**\n"
+                f"• DeepSeek: {cost_map['DeepSeek']}\n"
+                f"• OpenAI: {cost_map['OpenAI']}\n"
+                f"• Grok: {cost_map['Grok']}\n"
+                f"(LLM call only — typical episode length)")
+
         genre = st.selectbox(
             "Genre",
             ["Fantasy academy", "Space mission", "Mystery / investigation", "Slice of life", "Superhero"]
@@ -219,7 +291,6 @@ def main():
             st.warning("⚠️ Lesson Content cannot be empty.")
             st.stop()
 
-        # Check the exact secret name for the chosen provider
         secret_mapping = {
             "DeepSeek": "DEEPSEEK_API_KEY",
             "OpenAI": "OPENAI_API_KEY",
@@ -227,8 +298,7 @@ def main():
         }
         secret_name = secret_mapping[provider]
         if not st.secrets.get(secret_name):
-            st.error(f"🚫 {secret_name} not found in Streamlit Secrets.\n\n"
-                     f"Check your secrets.toml — it must be exactly named **{secret_name}**.")
+            st.error(f"🚫 {secret_name} not found in Streamlit Secrets.")
             st.stop()
 
         with st.spinner(f"Generating story episode with {provider}..."):
@@ -247,6 +317,39 @@ def main():
                 story = call_llm(provider, system_prompt, user_prompt, temperature)
                 st.subheader(f"✅ Generated Episode (using {provider})")
                 st.markdown(story)
+
+                # ===================== TEXT-TO-SPEECH (READ ALOUD) =====================
+                st.divider()
+                st.subheader("🔊 Read the Episode Aloud")
+                if st.button("🎙️ Generate Full Audio with OpenAI TTS", use_container_width=True, key="tts_button"):
+                    openai_key = st.secrets.get("OPENAI_API_KEY")
+                    if not openai_key:
+                        st.error("OpenAI API key required for text-to-speech.")
+                    else:
+                        with st.spinner("Generating audio (may take 10–20 seconds)..."):
+                            try:
+                                tts_client = OpenAI(api_key=openai_key)
+                                # Simple cleaning for better audio flow
+                                tts_text = story.replace("**", "").replace("Question(s):", "\n\n[Question for you to think about]\n")
+                                # OpenAI TTS limit is ~4096 characters — safe for a short episode
+                                response = tts_client.audio.speech.create(
+                                    model="tts-1",
+                                    voice="alloy",
+                                    input=tts_text[:4000]
+                                )
+                                audio_bytes = response.content
+
+                                st.audio(audio_bytes, format="audio/mp3")
+                                st.download_button(
+                                    "⬇️ Download MP3",
+                                    audio_bytes,
+                                    file_name="story_episode.mp3",
+                                    mime="audio/mpeg"
+                                )
+                                st.success("✅ Audio ready!")
+                            except Exception as e:
+                                st.error(f"TTS generation failed: {e}")
+
             except Exception as e:
                 st.error(f"❌ Error calling {provider} API: {str(e)}")
 
