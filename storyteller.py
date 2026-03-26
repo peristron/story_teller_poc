@@ -16,15 +16,12 @@ def call_llm(
     
     Supported providers: DeepSeek, OpenAI, Grok
     NOTE: Model names and endpoints are current as of March 2026.
-          You can adjust model names in the dictionary below if newer versions are released.
     """
-    # Load key from secrets (Streamlit Cloud preferred method)
     api_key = st.secrets.get(f"{provider.lower()}_api_key")
     if not api_key:
         raise ValueError(f"🚫 {provider} API key not found in Streamlit Secrets. "
                          f"Please add '{provider.lower()}_api_key' in the dashboard.")
 
-    # Provider configuration
     config = {
         "DeepSeek": {
             "url": "https://api.deepseek.com/v1/chat/completions",
@@ -72,7 +69,7 @@ def build_story_prompt(
     scenes: int = 3,
     questions_per_scene: int = 1,
 ) -> str:
-    """Builds the detailed user prompt for the LLM (unchanged from original)."""
+    """Builds the detailed user prompt for the LLM."""
     if len(content) > 8000:
         content = content[:8000] + "\n\n[TRUNCATED FOR DEMO]"
 
@@ -132,15 +129,19 @@ def main():
     )
 
     # ===================== PASSWORD PROTECTION =====================
-    # The password is stored securely in Streamlit Secrets (set in the Community Cloud dashboard)
-    # Format in Secrets (TOML):
-    # password = "your-chosen-password-here"
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
 
     if not st.session_state.password_correct:
         st.title("🔒 Story Mode – Proof of Concept")
         st.markdown("**Protected access** — enter the password set in Streamlit Secrets to continue.")
+
+        # DEBUG / HELPFUL MESSAGE if password secret is missing
+        stored_pw = st.secrets.get("password")
+        if not stored_pw:
+            st.warning("⚠️ No 'password' secret found in Streamlit Secrets!\n\n"
+                       "Go to your app → Settings → Secrets and add:\n"
+                       "```toml\npassword = \"your-actual-password-here\"\n```")
 
         password_input = st.text_input(
             "Enter app password",
@@ -150,12 +151,13 @@ def main():
 
         if st.button("🔓 Unlock App", type="primary", use_container_width=True):
             stored_password = st.secrets.get("password")
-            if stored_password and password_input == stored_password:
+            if stored_password and password_input.strip() == str(stored_password).strip():
                 st.session_state.password_correct = True
+                st.success("✅ Password correct! Loading app...")
                 st.rerun()
             else:
-                st.error("❌ Incorrect password. Please try again (or ask the owner to check Secrets).")
-        st.stop()  # Prevent rest of app from rendering
+                st.error("❌ Incorrect password. (Tip: check exact match, no extra spaces)")
+        st.stop()
 
     # ===================== MAIN APP UI =====================
     st.title("Story Mode – Proof of Concept")
@@ -209,7 +211,6 @@ def main():
             st.warning("⚠️ Lesson Content cannot be empty.")
             st.stop()
 
-        # Quick check that the chosen provider has a key in secrets
         if not st.secrets.get(f"{provider.lower()}_api_key"):
             st.error(f"🚫 {provider} API key not found in Streamlit Secrets.\n\n"
                      f"Add **{provider.lower()}_api_key** in the app settings on Streamlit Cloud.")
